@@ -189,8 +189,10 @@ locked screen. `shot` is unaffected — it reads the backing store, not input.
 
 ## Harness independence (self-disclaim + own TCC identity)
 
-Capture needs **Screen Recording** (`kTCCServiceScreenCapture`); input needs
-**Accessibility** (`kTCCServiceAccessibility`). These are **system** services in
+Capture needs **Screen Recording** (`kTCCServiceScreenCapture`); the element
+tree / `--press` need **Accessibility** (`kTCCServiceAccessibility`); synthetic
+input needs **`kTCCServicePostEvent`** (and `kTCCServiceListenEvent`), which
+compose to Accessibility. All are **system** services in
 `/Library/Application Support/com.apple.TCC/TCC.db`.
 
 **The problem with a bare CLI:** it has no TCC identity of its own, so TCC
@@ -214,31 +216,39 @@ self-check (which now reflects winctl's *own* grant), and prints
 
 ### One-time grant
 
-Grant winctl's own identity in the **system** TCC.db, once. The `csreq`
-blob must match winctl's designated requirement; build it from the signed
-binary (via `SecCodeCopyDesignatedRequirement` → `SecRequirementCopyData`, hex),
-then INSERT with `client_type=0` (bundle-id), `auth_value=2`:
+Grant winctl in the **system** TCC.db, once. **Identity matters:** on an
+AMFI-relaxed box (`amfi_get_out_of_my_way=1`) every non-Apple binary is stamped
+`CS_PLATFORM_BINARY`, and tccd cannot resolve a bundle id without a `.app` — so a
+`client_type=0` (bundle-id) row is silently **ignored** for Accessibility/PostEvent
+(`DB Action:None` → default deny; confirmable in `log stream --predicate 'process
+== "tccd"'`). tccd identifies a bare CLI by its **resolved path**, so grant the
+**path** with `client_type=1` and a **NULL csreq** (identifier-only, survives
+rebuilds — no DR hex needed):
 
 ```sh
 SYS='/Library/Application Support/com.apple.TCC/TCC.db'
-CSREQ='<hex of winctl DR>'   # see codesign -dr - winctl
-for SVC in kTCCServiceScreenCapture kTCCServiceAccessibility; do
+BIN=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$(command -v winctl)")
+for SVC in kTCCServiceScreenCapture kTCCServiceAccessibility \
+           kTCCServicePostEvent kTCCServiceListenEvent; do
   sqlite3 "$SYS" "INSERT OR REPLACE INTO access \
     (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) \
-    VALUES ('$SVC','com.nscake.winctl',0,2,4,1,X'$CSREQ',0);"
+    VALUES ('$SVC','$BIN',1,2,4,1,NULL,0);"
 done
 killall tccd
 ```
 
-Writing the root-owned system TCC.db requires root — on this machine via the
-passwordless `sudo /Users/tanner/.iconchanger/helper.sh` primitive. This was
-already run; verify with `winctl doctor`.
+Because the grant is keyed to the **path**, `build.sh` rebuilds are fine (same
+path, no csreq to invalidate), but **moving the binary voids the grant** — re-run
+the block. Writing the root-owned system TCC.db requires root — on this machine
+via the passwordless `sudo /Users/tanner/.iconchanger/helper.sh` primitive.
+Verify with `winctl doctor` (GREEN = live and active).
 
 ### Revoke
 
 ```sh
 SYS='/Library/Application Support/com.apple.TCC/TCC.db'
-sudo sqlite3 "$SYS" "DELETE FROM access WHERE client='com.nscake.winctl' AND service IN ('kTCCServiceScreenCapture','kTCCServiceAccessibility');"
+BIN=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$(command -v winctl)")
+sudo sqlite3 "$SYS" "DELETE FROM access WHERE client IN ('com.nscake.winctl','$BIN') AND service IN ('kTCCServiceScreenCapture','kTCCServiceAccessibility','kTCCServicePostEvent','kTCCServiceListenEvent');"
 sudo killall tccd
 ```
 

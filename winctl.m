@@ -789,20 +789,30 @@ static int cmd_doctor(NSArray<NSString *> *args) {
     BOOL liveScreen = CGPreflightScreenCaptureAccess ? CGPreflightScreenCaptureAccess() : NO;
     BOOL liveAX = AXIsProcessTrusted();
 
-    // Standing grant for winctl's own stable identity in the system TCC.db.
-    // This is the DETERMINISTIC source of truth (independent of who runs doctor,
-    // and not subject to the caching lag of the live preflight APIs — notably
-    // AXIsProcessTrusted, which can read stale for seconds after a tccd restart).
-    int selfScreen = tccAuth("kTCCServiceScreenCapture", kSelfClient);
-    int selfAX     = tccAuth("kTCCServiceAccessibility", kSelfClient);
+    // Standing grant for winctl in the system TCC.db. On an AMFI-relaxed box a
+    // bare CLI is identified by its PATH (client_type=1), not its bundle id —
+    // tccd can't resolve a bundle id without a .app — so a bundle-id row is
+    // ignored for Accessibility/PostEvent. We therefore accept a grant under
+    // EITHER identity (bundle id or the resolved binary path).
+    char exePath[PATH_MAX] = {0}, realPath[PATH_MAX] = {0};
+    uint32_t sz = sizeof(exePath);
+    const char *binPath = NULL;
+    if (_NSGetExecutablePath(exePath, &sz) == 0)
+        binPath = realpath(exePath, realPath) ? realPath : exePath;
+    int (^bestAuth)(const char *) = ^(const char *svc){
+        int a = tccAuth(svc, kSelfClient);
+        if (binPath) { int b = tccAuth(svc, binPath); if (b > a) a = b; }
+        return a;
+    };
+    int selfScreen = bestAuth("kTCCServiceScreenCapture");
+    int selfAX     = bestAuth("kTCCServiceAccessibility");
 
     // Three states, not two:
-    //   granted  — the TCC.db rows say ALLOWED for winctl's own identity
+    //   granted  — a TCC.db row says ALLOWED for winctl (bundle-id OR path)
     //   live     — the running (disclaimed) process is actually honored right now
-    // A grant can be present in the DB yet NOT honored by the current login
-    // session (typical right after inserting an Accessibility grant, or after a
-    // reboot before re-login) — capture/input then still fail. So GREEN requires
-    // BOTH; granted-but-not-live is a distinct AMBER state that a re-login fixes.
+    // GREEN requires BOTH. granted-but-not-live (AMBER) usually means the row is
+    // keyed to the WRONG identity — a bundle-id row that tccd won't match for a
+    // bare CLI; re-grant by PATH (see below).
     BOOL granted = disclaimed && selfScreen == 2 && selfAX == 2;
     BOOL live    = liveScreen && liveAX;
     BOOL green   = granted && live;
@@ -836,21 +846,26 @@ static int cmd_doctor(NSArray<NSString *> *args) {
                "   UNDER ANY HARNESS (VS Code, Terminal, Ocean, cron…): the grant follows winctl,\n"
                "   not the host.\n");
     } else if (granted && !live) {
-        printf("=> AMBER: winctl's grant is present in the TCC.db but is NOT active in this login\n"
-               "   session, so capture/input will fail right now. Log out and back in (or reboot)\n"
-               "   to activate it — no re-grant needed. (Screen Recording usually activates on a\n"
-               "   tccd restart; Accessibility typically needs the re-login.)\n");
+        printf("=> AMBER: a grant row exists but tccd is NOT honoring it live. On this AMFI box\n"
+               "   that usually means the row is keyed to the WRONG identity — a bundle-id row\n"
+               "   that tccd can't match for a bare CLI (it identifies winctl by PATH). Re-grant\n"
+               "   by PATH (client_type=1) as shown below, then re-run doctor.\n");
     } else {
         printf("=> RED: not granted to winctl's own identity yet. See the one-time grant below.\n");
     }
 
-    if (!granted) {
-        printf("\nOne-time grant (root; writes the SYSTEM TCC.db). Build the csreq HEX from\n");
-        printf("winctl's designated requirement:  codesign -dr - $(command -v winctl)\n");
+    if (!green) {
+        printf("\nOne-time grant (root; writes the SYSTEM TCC.db). Grant winctl's resolved\n");
+        printf("BINARY PATH with client_type=1 and NULL csreq (identifier-only) — this is what\n");
+        printf("tccd matches for a bare CLI on an AMFI-relaxed box:\n");
         printf("  SYS='/Library/Application Support/com.apple.TCC/TCC.db'\n");
-        printf("  sqlite3 \"$SYS\" \"INSERT OR REPLACE INTO access \\\n");
-        printf("    (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) \\\n");
-        printf("    VALUES ('kTCCServiceScreenCapture','%s',0,2,4,1,X'<HEX>',0);\"\n", kSelfClient);
+        printf("  BIN=%s\n", binPath ? binPath : "$(command -v winctl)");
+        printf("  for S in kTCCServiceScreenCapture kTCCServiceAccessibility \\\n");
+        printf("           kTCCServicePostEvent kTCCServiceListenEvent; do\n");
+        printf("    sqlite3 \"$SYS\" \"INSERT OR REPLACE INTO access \\\n");
+        printf("      (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) \\\n");
+        printf("      VALUES ('$S','$BIN',1,2,4,1,NULL,0);\"\n");
+        printf("  done\n");
         printf("  killall tccd\n");
     }
     return green ? 0 : 1;
