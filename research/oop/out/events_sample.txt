@@ -1,0 +1,5 @@
+evt type=5 loc=540,583 win=0
+evt type=1 loc=540,583 win=0
+evt type=2 loc=540,583 win=0
+evt type=10 loc=0,228 win=8563
+evt type=11 loc=0,228 win=8563

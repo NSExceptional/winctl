@@ -1,0 +1,6 @@
+# compiled build product (rebuild from source)
+winctl
+poltergeist
+_CodeSignature
+*.o
+.DS_Store

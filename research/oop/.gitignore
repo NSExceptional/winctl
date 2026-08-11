@@ -1,0 +1,6 @@
+*.o
+.DS_Store
+# compiled build products (rebuild from sources)
+Target.app/Contents/MacOS/Target
+controller.app/Contents/MacOS/controller
+out/pixstats

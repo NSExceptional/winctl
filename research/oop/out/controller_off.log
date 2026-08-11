@@ -1,0 +1,93 @@
+=== controller tag=off pid=88097 wid=8563 trusted=1 ===
+[AX activate] AXManualAccessibility set err=-25205  AXEnhancedUserInterface set err=-25208
+[AX diag] AXWindows count=1  AXMainWindow err=0 role=AXApplication
+[tree] roleErr=0 role=AXApplication title=Target childCount=2
+[tree]   roleErr=0 role=AXApplication title=Target childCount=2
+[tree]     roleErr=0 role=AXApplication title=Target childCount=2
+[tree]       roleErr=0 role=AXApplication title=Target childCount=2
+[tree]         roleErr=0 role=AXApplication title=Target childCount=2
+[tree]           roleErr=0 role=AXApplication title=Target childCount=2
+[tree]             roleErr=0 role=AXApplication title=Target childCount=2
+[tree]             roleErr=0 role=AXMenuBar title=- childCount=2
+[tree]           roleErr=0 role=AXMenuBar title=- childCount=2
+[tree]             roleErr=0 role=AXMenuBarItem title=Apple childCount=1
+[tree]             roleErr=0 role=AXMenuBarItem title=Target childCount=1
+[tree]         roleErr=0 role=AXMenuBar title=- childCount=2
+[tree]           roleErr=0 role=AXMenuBarItem title=Apple childCount=1
+[tree]             roleErr=0 role=AXMenu title=- childCount=21
+[tree]           roleErr=0 role=AXMenuBarItem title=Target childCount=1
+[tree]             roleErr=0 role=AXMenu title=- childCount=0
+[tree]       roleErr=0 role=AXMenuBar title=- childCount=2
+[tree]         roleErr=0 role=AXMenuBarItem title=Apple childCount=1
+[tree]           roleErr=0 role=AXMenu title=- childCount=21
+[tree]             roleErr=0 role=AXMenuItem title=About This Mac childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=System Information childCount=0
+[tree]             roleErr=0 role=AXMenuItem title= childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=System Settings…, 1 update childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=App Store…, 17 updates childCount=0
+[tree]             roleErr=0 role=AXMenuItem title= childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Recent Items childCount=1
+[tree]             roleErr=0 role=AXMenuItem title= childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Force Quit… childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Force Quit Target childCount=0
+[tree]             roleErr=0 role=AXMenuItem title= childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Sleep childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Restart… childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Restart childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Shut Down… childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Shut Down childCount=0
+[tree]             roleErr=0 role=AXMenuItem title= childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Lock Screen childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Log Out Tanner Bennett… childCount=0
+[tree]             roleErr=0 role=AXMenuItem title=Log Out Tanner Bennett childCount=0
+[tree]             roleErr=0 role=AXMenuItem title= childCount=0
+[tree]         roleErr=0 role=AXMenuBarItem title=Target childCount=1
+[tree]           roleErr=0 role=AXMenu title=- childCount=0
+[tree]     roleErr=0 role=AXMenuBar title=- childCount=2
+[tree]       roleErr=0 role=AXMenuBarItem title=Apple childCount=1
+[tree]         roleErr=0 role=AXMenu title=- childCount=21
+[tree]           roleErr=0 role=AXMenuItem title=About This Mac childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=System Information childCount=0
+[tree]           roleErr=0 role=AXMenuItem title= childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=System Settings…, 1 update childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=App Store…, 17 updates childCount=0
+[tree]           roleErr=0 role=AXMenuItem title= childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Recent Items childCount=1
+[tree]             roleErr=0 role=AXMenu title=- childCount=57
+[tree]           roleErr=0 role=AXMenuItem title= childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Force Quit… childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Force Quit Target childCount=0
+[tree]           roleErr=0 role=AXMenuItem title= childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Sleep childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Restart… childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Restart childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Shut Down… childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Shut Down childCount=0
+[tree]           roleErr=0 role=AXMenuItem title= childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Lock Screen childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Log Out Tanner Bennett… childCount=0
+[tree]           roleErr=0 role=AXMenuItem title=Log Out Tanner Bennett childCount=0
+[tree]           roleErr=0 role=AXMenuItem title= childCount=0
+[tree]       roleErr=0 role=AXMenuBarItem title=Target childCount=1
+[tree]         roleErr=0 role=AXMenu title=- childCount=0
+[tree]   roleErr=0 role=AXMenuBar title=- childCount=2
+[tree]     roleErr=0 role=AXMenuBarItem title=Apple childCount=1
+[tree]       roleErr=0 role=AXMenu title=- childCount=21
+[tree]         roleErr=0 role=AXMenuItem title=About This Mac childCount=0
+[tree]         roleErr=0 role=AXMenuItem title=System Information childCount=0
+[tree]         roleErr=0 role=AXMenuItem title= childCount=0
+[tree]         roleErr=0 role=AXMenuItem title=System Settings…, 1 update childCount=0
+[tree]         roleErr=0 role=AXMenuItem title=App Store…, 17 updates childCount=0
+[tree]         roleErr=0 role=AXMenuItem title= childCount=0
+[tree]         roleErr=0 role=AXMenuItem title=Recent Items childCount=1
+[tree]           roleErr=0 role=AXMenu title=- childCount=57
+[ACT AX press ] button_found=0
+[ACT AX press ] err=-25200 label_before=(nil) label_after=(nil) landed=0
+[ACT AX setval] err=-25200 field_now=(nil) landed=0
+[ACT CGEvent] ax_button_found=0 ax_pos=0,0 ax_size=0,0 haveClickArg=1 clickArg=540,249
+[ACT CGEventPostToPid] click=540,249 haveRect=1 ax_label_before=(nil) ax_label_after=(nil) ext_label=(none) cursor_before=799,412 cursor_after=799,412 cursor_moved_px=0.0
+[SEE CGWindowListCreateImage] resolved=1 image=1 ok=1 nonblack=0.999 max_channel=255 -> /tmp/poltergeist-oop/see_cgwindowlist_off.png
+[SEE SkyLightHW] resolved: CGSMainConnectionID=1 SLSHWCaptureWindowList=1 CGSHWCaptureWindowList=1
+[SEE SkyLightHW SLSHWCaptureWindowList] ok=1 nonblack=0.990 max_channel=255 -> /tmp/poltergeist-oop/see_skylighthw_off.png
+[SEE CARenderServer] symbol present but context_id for a FOREIGN window is not obtainable out-of-process (no public enumeration of another process's CAContext ids); NOT REACHABLE without in-target cooperation. Skipping.
+=== controller done tag=off ===

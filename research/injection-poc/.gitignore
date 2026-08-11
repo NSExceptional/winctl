@@ -1,0 +1,8 @@
+# compiled build products (rebuild from sources)
+libpoltergeist.dylib
+mouseloc
+pixstats
+Target.app/Contents/MacOS/Target
+Target.app/Contents/_CodeSignature
+*.o
+.DS_Store

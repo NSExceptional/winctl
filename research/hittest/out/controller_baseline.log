@@ -1,0 +1,11 @@
+[syms] SLEventPostToPid=0x18be09970 SLEventSetIntegerValueField=0x18bde87c0 CGEventSetWindowLocation=0x18bde7688 SLPSPostEventRecordTo=0x18c034538 _SLPSGetFrontProcess=0x18c032964 SLPSSetFrontProcessWithOptions=0x18c033504 SLSGetWindowOwner=0x18bd5ab54 SLSGetConnectionPSN=0x18be10068 CGSMainConnectionID=0x18bf92bb4
+[method baseline] pid=31205 wid=8595 cg=540.0,249.0 winlocal=90.0,72.0 havePSN=1 psn=0,14876207
+[RESULT baseline] counter_before=-1 counter_after=-1 ACTUATED=NO cursor_moved_px=0.0
+[syms] SLEventPostToPid=0x18be09970 SLEventSetIntegerValueField=0x18bde87c0 CGEventSetWindowLocation=0x18bde7688 SLPSPostEventRecordTo=0x18c034538 _SLPSGetFrontProcess=0x18c032964 SLPSSetFrontProcessWithOptions=0x18c033504 SLSGetWindowOwner=0x18bd5ab54 SLSGetConnectionPSN=0x18be10068 CGSMainConnectionID=0x18bf92bb4
+[method baseline] pid=35628 wid=8616 cg=540.0,249.0 winlocal=90.0,72.0 havePSN=1 psn=0,14933565
+[method baseline] target_frontmost_at_click=0
+[RESULT baseline] counter_before=0 counter_after=0 ACTUATED=NO target_frontmost=0 cursor_moved_px=0.0
+[syms] SLEventPostToPid=0x18be09970 SLEventSetIntegerValueField=0x18bde87c0 CGEventSetWindowLocation=0x18bde7688 SLPSPostEventRecordTo=0x18c034538 _SLPSGetFrontProcess=0x18c032964 SLPSSetFrontProcessWithOptions=0x18c033504 SLSGetWindowOwner=0x18bd5ab54 SLSGetConnectionPSN=0x18be10068 CGSMainConnectionID=0x18bf92bb4
+[method baseline] pid=60690 wid=8687 cg=540.0,249.0 winlocal=90.0,72.0 havePSN=1 psn=0,15216258
+[method baseline] target_frontmost_at_click=0
+[RESULT baseline] counter_before=0 counter_after=0 ACTUATED=NO target_frontmost=0 cursor_moved_px=0.0

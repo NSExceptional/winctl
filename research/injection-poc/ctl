@@ -1,0 +1,11 @@
+#!/bin/bash
+# ctl — send one command line to the Poltergeist control socket.
+# Usage: ./ctl shot /tmp/poltergeist/out.png
+#        ./ctl type Hello from Poltergeist
+#        ./ctl click 100 200
+SOCK=/tmp/poltergeist.sock
+if [ ! -S "$SOCK" ]; then
+    echo "ctl: no socket at $SOCK (is the target running with the dylib injected?)" >&2
+    exit 1
+fi
+printf '%s\n' "$*" | nc -U "$SOCK"

@@ -1,0 +1,7 @@
+*.o
+.DS_Store
+# compiled build products (rebuild via build.sh from sources)
+Target.app/Contents/MacOS/Target
+controller.app/Contents/MacOS/controller
+Target.app/Contents/_CodeSignature
+controller.app/Contents/_CodeSignature
