@@ -796,15 +796,24 @@ static int cmd_doctor(NSArray<NSString *> *args) {
     int selfScreen = tccAuth("kTCCServiceScreenCapture", kSelfClient);
     int selfAX     = tccAuth("kTCCServiceAccessibility", kSelfClient);
 
-    BOOL green = disclaimed && selfScreen == 2 && selfAX == 2;
+    // Three states, not two:
+    //   granted  — the TCC.db rows say ALLOWED for winctl's own identity
+    //   live     — the running (disclaimed) process is actually honored right now
+    // A grant can be present in the DB yet NOT honored by the current login
+    // session (typical right after inserting an Accessibility grant, or after a
+    // reboot before re-login) — capture/input then still fail. So GREEN requires
+    // BOTH; granted-but-not-live is a distinct AMBER state that a re-login fixes.
+    BOOL granted = disclaimed && selfScreen == 2 && selfAX == 2;
+    BOOL live    = liveScreen && liveAX;
+    BOOL green   = granted && live;
 
     if (json) {
         printf("{\"disclaimed\":%s,\"liveScreenCapture\":%s,\"liveAccessibility\":%s,"
                "\"self\":{\"client\":\"%s\",\"screenCapture\":\"%s\",\"accessibility\":\"%s\"},"
-               "\"harnessIndependent\":%s}\n",
+               "\"granted\":%s,\"liveActive\":%s,\"harnessIndependent\":%s}\n",
                disclaimed?"true":"false", liveScreen?"true":"false", liveAX?"true":"false",
                kSelfClient, authStr(selfScreen), authStr(selfAX),
-               green?"true":"false");
+               granted?"true":"false", live?"true":"false", green?"true":"false");
         return green ? 0 : 1;
     }
 
@@ -822,13 +831,20 @@ static int cmd_doctor(NSArray<NSString *> *args) {
     printf("  Screen Recording : %s\n", liveScreen ? "GRANTED" : "not-yet (or lagging)");
     printf("  Accessibility    : %s\n", liveAX ? "GRANTED" : "not-yet (or lagging)");
     printf("\n");
-    if (green)
-        printf("=> GREEN: winctl has its own TCC identity and grant — it WORKS UNDER ANY HARNESS\n"
-               "   (VS Code, Terminal, Ocean, cron…), because the grant follows winctl, not the host.\n");
-    else
-        printf("=> NOT granted to winctl's own identity yet. See the one-time grant below.\n");
+    if (green) {
+        printf("=> GREEN: winctl has its own TCC identity and grant, live and active — it WORKS\n"
+               "   UNDER ANY HARNESS (VS Code, Terminal, Ocean, cron…): the grant follows winctl,\n"
+               "   not the host.\n");
+    } else if (granted && !live) {
+        printf("=> AMBER: winctl's grant is present in the TCC.db but is NOT active in this login\n"
+               "   session, so capture/input will fail right now. Log out and back in (or reboot)\n"
+               "   to activate it — no re-grant needed. (Screen Recording usually activates on a\n"
+               "   tccd restart; Accessibility typically needs the re-login.)\n");
+    } else {
+        printf("=> RED: not granted to winctl's own identity yet. See the one-time grant below.\n");
+    }
 
-    if (!green) {
+    if (!granted) {
         printf("\nOne-time grant (root; writes the SYSTEM TCC.db). Build the csreq HEX from\n");
         printf("winctl's designated requirement:  codesign -dr - $(command -v winctl)\n");
         printf("  SYS='/Library/Application Support/com.apple.TCC/TCC.db'\n");
