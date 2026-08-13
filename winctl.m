@@ -967,6 +967,137 @@ static int cmd_grant(NSArray<NSString *> *args) {
 }
 
 // ---------------------------------------------------------------------------
+// sim — drive an iOS Simulator (capture via simctl, input via idb)
+// ---------------------------------------------------------------------------
+// Same model as Claude Desktop's simulator pane: discrete device-framebuffer
+// screenshots + HID input to the SimDevice — never the host cursor. Capture uses
+// `xcrun simctl io … screenshot` (CoreSimulator framebuffer). Input shells out to
+// Meta's `idb`, which wraps the SAME FBSimulatorControl/Indigo HID engine Claude
+// links in-process — so `sim tap/swipe/type` deliver real device HID events.
+
+// Launch a tool inheriting our stdio; returns its exit status (-1 if it couldn't
+// be launched).
+static int runInherit(NSString *launchPath, NSArray<NSString *> *args) {
+    NSTask *t = [NSTask new];
+    t.executableURL = [NSURL fileURLWithPath:launchPath];
+    t.arguments = args;
+    NSError *err = nil;
+    if (![t launchAndReturnError:&err]) return -1;
+    [t waitUntilExit];
+    return t.terminationStatus;
+}
+
+// Launch a tool capturing stdout; fills *status. Returns nil if launch failed.
+static NSString *runCapture(NSString *launchPath, NSArray<NSString *> *args, int *status) {
+    NSTask *t = [NSTask new];
+    t.executableURL = [NSURL fileURLWithPath:launchPath];
+    t.arguments = args;
+    NSPipe *out = [NSPipe pipe];
+    t.standardOutput = out;
+    t.standardError = [NSPipe pipe];
+    NSError *err = nil;
+    if (![t launchAndReturnError:&err]) { if (status) *status = -1; return nil; }
+    NSData *d = [out.fileHandleForReading readDataToEndOfFile];
+    [t waitUntilExit];
+    if (status) *status = t.terminationStatus;
+    return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+}
+
+// Resolve a tool on PATH (nil if absent).
+static NSString *toolPath(NSString *name) {
+    int st = 0;
+    NSString *p = runCapture(@"/usr/bin/which", @[name], &st);
+    p = [p stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return (st == 0 && p.length) ? p : nil;
+}
+
+// Resolve <target> (a udid, a name substring, or "booted") to a concrete udid.
+static NSString *simResolveUdid(NSString *target) {
+    int st = 0;
+    NSString *json = runCapture(@"/usr/bin/xcrun", @[@"simctl", @"list", @"devices", @"-j"], &st);
+    if (!json) return nil;
+    NSDictionary *root = [NSJSONSerialization
+        JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    NSDictionary *devices = root[@"devices"];
+    NSMutableArray<NSDictionary *> *booted = [NSMutableArray array];
+    for (NSString *runtime in devices)
+        for (NSDictionary *d in devices[runtime])
+            if ([d[@"state"] isEqualToString:@"Booted"]) [booted addObject:d];
+
+    BOOL wantBooted = [target isEqualToString:@"booted"];
+    for (NSDictionary *d in booted) {
+        if (wantBooted) return d[@"udid"];
+        if ([d[@"udid"] isEqualToString:target]) return d[@"udid"];
+        if ([d[@"name"] rangeOfString:target options:NSCaseInsensitiveSearch].location != NSNotFound)
+            return d[@"udid"];
+    }
+    // An explicit udid that isn't currently booted is still usable for `shot`.
+    if (!wantBooted && target.length >= 32 && [target containsString:@"-"]) return target;
+    return nil;
+}
+
+static int cmd_sim(NSArray<NSString *> *args) {
+    if (args.count < 1) {
+        fputs("usage: winctl sim <list|shot|tap|swipe|type|key|button> …  (see `winctl sim --help`)\n", stderr);
+        return 2;
+    }
+    NSString *sub = args[0];
+    NSArray<NSString *> *rest = [args subarrayWithRange:NSMakeRange(1, args.count - 1)];
+
+    if ([sub isEqualToString:@"list"]) {
+        BOOL all = [rest containsObject:@"--all"];
+        return runInherit(@"/usr/bin/xcrun",
+            all ? @[@"simctl", @"list", @"devices", @"available"]
+                : @[@"simctl", @"list", @"devices", @"booted"]);
+    }
+
+    NSMutableArray<NSString *> *pos = [NSMutableArray array];
+    for (NSString *a in rest) if (![a hasPrefix:@"--"]) [pos addObject:a];
+    if (pos.count < 1) die(@"winctl sim %@: missing <udid|name|booted>", sub);
+    NSString *udid = simResolveUdid(pos[0]);
+    if (!udid) die(@"no simulator matched '%@' (see `winctl sim list`)", pos[0]);
+
+    if ([sub isEqualToString:@"shot"]) {
+        if (pos.count < 2) die(@"usage: winctl sim shot <udid|name|booted> <out.png>");
+        int st = runInherit(@"/usr/bin/xcrun", @[@"simctl", @"io", udid, @"screenshot", pos[1]]);
+        if (st == 0) printf("wrote %s (simulator %s)\n", pos[1].UTF8String, udid.UTF8String);
+        return st;
+    }
+
+    // Input subcommands need idb (the FBSimulatorControl/Indigo bridge).
+    NSString *idb = toolPath(@"idb");
+    if (!idb)
+        die(@"`idb` is not installed — needed for simulator input (tap/swipe/type/key/button).\n"
+             "  install: brew install idb-companion && pip3 install fb-idb\n"
+             "Capture (`winctl sim shot`) and `winctl sim list` work without it.");
+
+    NSArray<NSString *> *idbArgs = nil;
+    if ([sub isEqualToString:@"tap"]) {
+        if (pos.count < 3) die(@"usage: winctl sim tap <target> <x> <y>");
+        idbArgs = @[@"ui", @"tap", pos[1], pos[2], @"--udid", udid];
+    } else if ([sub isEqualToString:@"swipe"]) {
+        if (pos.count < 5) die(@"usage: winctl sim swipe <target> <x1> <y1> <x2> <y2> [duration]");
+        NSMutableArray *a = [@[@"ui", @"swipe", pos[1], pos[2], pos[3], pos[4]] mutableCopy];
+        if (pos.count >= 6) { [a addObject:@"--duration"]; [a addObject:pos[5]]; }
+        [a addObjectsFromArray:@[@"--udid", udid]];
+        idbArgs = a;
+    } else if ([sub isEqualToString:@"type"]) {
+        if (pos.count < 2) die(@"usage: winctl sim type <target> <text…>");
+        NSString *text = [[pos subarrayWithRange:NSMakeRange(1, pos.count - 1)] componentsJoinedByString:@" "];
+        idbArgs = @[@"ui", @"text", text, @"--udid", udid];
+    } else if ([sub isEqualToString:@"key"]) {
+        if (pos.count < 2) die(@"usage: winctl sim key <target> <hid-keycode>");
+        idbArgs = @[@"ui", @"key", pos[1], @"--udid", udid];
+    } else if ([sub isEqualToString:@"button"]) {
+        if (pos.count < 2) die(@"usage: winctl sim button <target> <APPLE_PAY|HOME|LOCK|SIDE_BUTTON|SIRI>");
+        idbArgs = @[@"ui", @"button", pos[1], @"--udid", udid];
+    } else {
+        die(@"unknown: winctl sim %@ (try list|shot|tap|swipe|type|key|button)", sub);
+    }
+    return runInherit(idb, idbArgs);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 static void usage(void) {
@@ -980,7 +1111,8 @@ static void usage(void) {
         "  winctl click    <target> <x> <y> | --title T [--role R] [--id ID] [--press]\n"
         "  winctl describe <target> [--actionable] [--role R] [--title T] [--id ID] [--json]\n"
         "  winctl doctor   [--json]\n"
-        "  winctl grant    [--revoke]             self-install the TCC grant (AMFI-relaxed box)\n\n"
+        "  winctl grant    [--revoke]             self-install the TCC grant (AMFI-relaxed box)\n"
+        "  winctl sim      <list|shot|tap|swipe|type|key|button> …   drive an iOS Simulator\n\n"
         "<target>:  app-name-substring | pid:N | win:ID   (from `winctl list`)\n"
         "`winctl <command> --help` for flags, examples, and caveats.\n"
         "Permissions/capture/input acting up? run `winctl doctor` — it explains this box's\n"
@@ -1056,6 +1188,23 @@ static BOOL cmdHelp(NSString *cmd, NSArray<NSString *> *args) {
         "SIP off). On a standard Mac it refuses and points you to System Settings instead.\n"
         "The grant is keyed to winctl's PATH: rebuilds are fine, but MOVING the binary\n"
         "voids it (re-run). Verify with `winctl doctor`.\n";
+    else if ([cmd isEqualToString:@"sim"]) h =
+        "winctl sim — drive an iOS Simulator directly (device framebuffer + HID), the way\n"
+        "Claude Desktop's simulator pane does — never the host cursor.\n\n"
+        "  winctl sim list [--all]                 booted sims (or all available)\n"
+        "  winctl sim shot   <target> <out.png>    device-framebuffer screenshot (via simctl)\n"
+        "  winctl sim tap    <target> <x> <y>\n"
+        "  winctl sim swipe  <target> <x1> <y1> <x2> <y2> [duration]\n"
+        "  winctl sim type   <target> <text…>\n"
+        "  winctl sim key    <target> <hid-keycode>\n"
+        "  winctl sim button <target> <APPLE_PAY|HOME|LOCK|SIDE_BUTTON|SIRI>\n\n"
+        "<target>:  a udid, a device-name substring, or `booted`.\n"
+        "Capture/list use `xcrun simctl` (no extra deps). Input uses Meta's `idb`\n"
+        "(brew install idb-companion && pip3 install fb-idb) — the same FBSimulatorControl\n"
+        "/Indigo HID engine Claude links in-process; winctl tells you if it's missing.\n\n"
+        "examples:\n"
+        "  winctl sim shot booted /tmp/sim.png\n"
+        "  winctl sim tap booted 200 420\n";
     if (!h) return NO;
     fputs(h, stdout);
     return YES;
@@ -1119,9 +1268,11 @@ int main(int argc, const char *argv[]) {
         if ([cmd isEqualToString:@"-h"] || [cmd isEqualToString:@"--help"] || [cmd isEqualToString:@"help"]) { usage(); return 0; }
         if (cmdHelp(cmd, args)) return 0;   // `winctl <command> --help`
 
-        // `grant` runs as root and only edits the TCC.db — it must NOT disclaim.
-        // Everything else becomes TCC-responsible for itself before capture/input.
-        if (![cmd isEqualToString:@"grant"]) reexecDisclaimed(argc, argv);
+        // `grant` (root, edits TCC only) and `sim` (shells out to simctl/idb) don't
+        // touch our own capture/input path, so they must NOT self-disclaim.
+        // Everything else becomes TCC-responsible for itself first.
+        if (!([cmd isEqualToString:@"grant"] || [cmd isEqualToString:@"sim"]))
+            reexecDisclaimed(argc, argv);
 
         if ([cmd isEqualToString:@"list"])     return cmd_list(args);
         if ([cmd isEqualToString:@"shot"])     return cmd_shot(args);
@@ -1131,6 +1282,7 @@ int main(int argc, const char *argv[]) {
         if ([cmd isEqualToString:@"describe"]) return cmd_describe(args);
         if ([cmd isEqualToString:@"doctor"])   return cmd_doctor(args);
         if ([cmd isEqualToString:@"grant"])    return cmd_grant(args);
+        if ([cmd isEqualToString:@"sim"])      return cmd_sim(args);
 
         fprintf(stderr, "winctl: unknown command '%s'\n", cmd.UTF8String);
         usage();

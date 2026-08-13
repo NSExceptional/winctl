@@ -187,6 +187,37 @@ mouse *and* keyboard. So `type`/`key`/`click` all work on an unlocked session
 (including background windows and under the screensaver), and all stop at a
 locked screen. `shot` is unaffected — it reads the backing store, not input.
 
+## Driving an iOS Simulator
+
+`winctl sim` controls a booted Simulator the way Claude Desktop's simulator pane
+does — **discrete device-framebuffer screenshots + HID input to the SimDevice**,
+never the host cursor (so it's independent of the Simulator.app window, and of the
+Mac TCC grants above).
+
+```sh
+winctl sim list [--all]                 # booted sims (or all available)
+winctl sim shot   booted /tmp/sim.png   # device framebuffer (xcrun simctl io)
+winctl sim tap    booted 200 420
+winctl sim swipe  booted 100 500 100 100 [duration]
+winctl sim type   booted "hello"
+winctl sim key    booted <hid-keycode>
+winctl sim button booted <APPLE_PAY|HOME|LOCK|SIDE_BUTTON|SIRI>
+```
+
+`<target>` is a **udid**, a **device-name substring**, or **`booted`**.
+
+- **Capture / list** use `xcrun simctl` — no extra dependencies, device-accurate
+  (no host window chrome), works with Simulator.app hidden.
+- **Input** shells out to Meta's **`idb`** (`brew install idb-companion &&
+  pip3 install fb-idb`), which wraps the **same FBSimulatorControl / Indigo HID**
+  engine Claude links in-process — so taps/swipes/text are real device HID events,
+  not host clicks. If `idb` isn't installed, the input subcommands say so; capture
+  and list still work.
+
+This mirrors the reverse-engineering in `../Claude-iOS-Sim-RE` (Documents): Claude
+embeds `FBSimulatorControl`, injects **Indigo HID**, and streams the **IOSurface
+framebuffer**. `idb` is the packaged form of that same stack.
+
 ## Harness independence (self-disclaim + own TCC identity)
 
 Capture needs **Screen Recording** (`kTCCServiceScreenCapture`); the element
