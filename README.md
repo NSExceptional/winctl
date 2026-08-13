@@ -206,6 +206,12 @@ winctl sim button booted <APPLE_PAY|HOME|LOCK|SIDE_BUTTON|SIRI>
 
 `<target>` is a **udid**, a **device-name substring**, or **`booted`**.
 
+`tap`/`swipe` take coordinates in **`sim shot` pixels** and auto-scale to the
+device's logical points (idb works in points; a 3× screen is 1260×2736 px =
+420×912 pt) — so read a pixel off the screenshot and tap that same number. Pass
+`--points` to give raw points instead. idb (and the `idb_companion` it spawns)
+are located even under a minimal harness PATH (pipx `~/.local/bin`, Homebrew).
+
 - **Capture / list** use `xcrun simctl` — no extra dependencies, device-accurate
   (no host window chrome), works with Simulator.app hidden.
 - **Input** shells out to Meta's **`idb`** (`brew install idb-companion &&

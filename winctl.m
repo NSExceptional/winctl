@@ -1003,12 +1003,36 @@ static NSString *runCapture(NSString *launchPath, NSArray<NSString *> *args, int
     return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
 }
 
-// Resolve a tool on PATH (nil if absent).
+// Common tool dirs not always on a minimal harness PATH: pipx → ~/.local/bin,
+// Homebrew → /opt/homebrew/bin (Apple Silicon) or /usr/local/bin (Intel).
+static NSArray<NSString *> *extraToolDirs(void) {
+    return @[
+        [NSHomeDirectory() stringByAppendingPathComponent:@".local/bin"],
+        @"/opt/homebrew/bin",
+        @"/usr/local/bin",
+    ];
+}
+
+// Resolve a tool: PATH first, then the well-known dirs above (nil if absent).
 static NSString *toolPath(NSString *name) {
     int st = 0;
     NSString *p = runCapture(@"/usr/bin/which", @[name], &st);
     p = [p stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    return (st == 0 && p.length) ? p : nil;
+    if (st == 0 && p.length) return p;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *dir in extraToolDirs()) {
+        NSString *cand = [dir stringByAppendingPathComponent:name];
+        if ([fm isExecutableFileAtPath:cand]) return cand;
+    }
+    return nil;
+}
+
+// Prepend the well-known dirs to PATH so a launched tool (idb) can itself find
+// its helpers (idb_companion) even under a harness with a minimal PATH.
+static void augmentPathEnv(void) {
+    NSString *cur = @(getenv("PATH") ?: "");
+    NSString *extra = [extraToolDirs() componentsJoinedByString:@":"];
+    setenv("PATH", [[extra stringByAppendingString:@":"] stringByAppendingString:cur].UTF8String, 1);
 }
 
 // Resolve <target> (a udid, a name substring, or "booted") to a concrete udid.
@@ -1034,6 +1058,18 @@ static NSString *simResolveUdid(NSString *target) {
     // An explicit udid that isn't currently booted is still usable for `shot`.
     if (!wantBooted && target.length >= 32 && [target containsString:@"-"]) return target;
     return nil;
+}
+
+// Device pixels-per-point (retina scale) from idb, for converting screenshot
+// pixel coordinates to the logical points idb's HID expects. 1.0 on failure.
+static double simDensity(NSString *idb, NSString *udid) {
+    int st = 0;
+    NSString *out = runCapture(idb, @[@"describe", @"--json", @"--udid", udid], &st);
+    if (!out) return 1.0;
+    NSDictionary *d = [NSJSONSerialization
+        JSONObjectWithData:[out dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    double density = [d[@"screen_dimensions"][@"density"] doubleValue];
+    return density > 0 ? density : 1.0;
 }
 
 static int cmd_sim(NSArray<NSString *> *args) {
@@ -1064,20 +1100,31 @@ static int cmd_sim(NSArray<NSString *> *args) {
         return st;
     }
 
-    // Input subcommands need idb (the FBSimulatorControl/Indigo bridge).
+    // Input subcommands need idb (the FBSimulatorControl/Indigo bridge). Make sure
+    // idb — and the idb_companion it spawns — are findable under a minimal PATH.
+    augmentPathEnv();
     NSString *idb = toolPath(@"idb");
     if (!idb)
         die(@"`idb` is not installed — needed for simulator input (tap/swipe/type/key/button).\n"
              "  install: brew install idb-companion && pip3 install fb-idb\n"
              "Capture (`winctl sim shot`) and `winctl sim list` work without it.");
 
+    // tap/swipe coordinates are given in SHOT PIXELS (what `sim shot` produces)
+    // and auto-scaled to the logical points idb wants; `--points` passes raw points.
+    BOOL rawPoints = [rest containsObject:@"--points"];
+    BOOL coordCmd = [sub isEqualToString:@"tap"] || [sub isEqualToString:@"swipe"];
+    double scale = (coordCmd && !rawPoints) ? simDensity(idb, udid) : 1.0;
+    NSString *(^pt)(NSString *) = ^(NSString *s) {
+        return scale == 1.0 ? s : (NSString *)[@(lround([s doubleValue] / scale)) stringValue];
+    };
+
     NSArray<NSString *> *idbArgs = nil;
     if ([sub isEqualToString:@"tap"]) {
         if (pos.count < 3) die(@"usage: winctl sim tap <target> <x> <y>");
-        idbArgs = @[@"ui", @"tap", pos[1], pos[2], @"--udid", udid];
+        idbArgs = @[@"ui", @"tap", pt(pos[1]), pt(pos[2]), @"--udid", udid];
     } else if ([sub isEqualToString:@"swipe"]) {
         if (pos.count < 5) die(@"usage: winctl sim swipe <target> <x1> <y1> <x2> <y2> [duration]");
-        NSMutableArray *a = [@[@"ui", @"swipe", pos[1], pos[2], pos[3], pos[4]] mutableCopy];
+        NSMutableArray *a = [@[@"ui", @"swipe", pt(pos[1]), pt(pos[2]), pt(pos[3]), pt(pos[4])] mutableCopy];
         if (pos.count >= 6) { [a addObject:@"--duration"]; [a addObject:pos[5]]; }
         [a addObjectsFromArray:@[@"--udid", udid]];
         idbArgs = a;
@@ -1193,12 +1240,15 @@ static BOOL cmdHelp(NSString *cmd, NSArray<NSString *> *args) {
         "Claude Desktop's simulator pane does — never the host cursor.\n\n"
         "  winctl sim list [--all]                 booted sims (or all available)\n"
         "  winctl sim shot   <target> <out.png>    device-framebuffer screenshot (via simctl)\n"
-        "  winctl sim tap    <target> <x> <y>\n"
-        "  winctl sim swipe  <target> <x1> <y1> <x2> <y2> [duration]\n"
+        "  winctl sim tap    <target> <x> <y> [--points]\n"
+        "  winctl sim swipe  <target> <x1> <y1> <x2> <y2> [duration] [--points]\n"
         "  winctl sim type   <target> <text…>\n"
         "  winctl sim key    <target> <hid-keycode>\n"
         "  winctl sim button <target> <APPLE_PAY|HOME|LOCK|SIDE_BUTTON|SIRI>\n\n"
         "<target>:  a udid, a device-name substring, or `booted`.\n"
+        "tap/swipe take coordinates in `sim shot` PIXELS (auto-scaled to the device's\n"
+        "logical points); pass `--points` to give raw points instead. So: screenshot with\n"
+        "`sim shot`, read a pixel coordinate off it, and tap that same number.\n"
         "Capture/list use `xcrun simctl` (no extra deps). Input uses Meta's `idb`\n"
         "(brew install idb-companion && pip3 install fb-idb) — the same FBSimulatorControl\n"
         "/Indigo HID engine Claude links in-process; winctl tells you if it's missing.\n\n"
