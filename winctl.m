@@ -76,8 +76,52 @@ typedef void (*CGEventSetWindowLocation_t)(CGEventRef, double, double);
 // without triggering a prompt.
 extern bool CGPreflightScreenCaptureAccess(void) __attribute__((weak_import));
 
+// csops(): query a process' code-signing status. On a box booted with
+// amfi_get_out_of_my_way=1, AMFI stamps EVERY non-Apple binary CS_PLATFORM_BINARY;
+// since winctl is Developer-signed (not an Apple platform binary), that flag on
+// ourselves is a reliable signal that AMFI enforcement is relaxed — which is
+// exactly the regime where tccd denies prompts and a manual path-identity grant
+// is both necessary and possible.
+extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
+#ifndef CS_OPS_STATUS
+#define CS_OPS_STATUS 0
+#endif
+#ifndef CS_PLATFORM_BINARY
+#define CS_PLATFORM_BINARY 0x04000000
+#endif
+
 static const char *kSystemTCC = "/Library/Application Support/com.apple.TCC/TCC.db";
 static const char *kSelfClient = "com.nscake.winctl";  // our own stable TCC identity (see below)
+
+// The AX-family services winctl needs, granted by PATH (see `grant`/`doctor`).
+static const char *kWinctlServices[] = {
+    "kTCCServiceScreenCapture",   // shot
+    "kTCCServiceAccessibility",   // describe / --press
+    "kTCCServicePostEvent",       // click / type / key (synthetic input)
+    "kTCCServiceListenEvent",     // composes to Accessibility
+};
+
+// YES when AMFI enforcement is relaxed on this machine (amfi_get_out_of_my_way).
+static BOOL amfiRelaxed(void) {
+    uint32_t flags = 0;
+    if (csops(getpid(), CS_OPS_STATUS, &flags, sizeof(flags)) != 0) return NO;
+    return (flags & CS_PLATFORM_BINARY) != 0;
+}
+
+// This binary's resolved (symlink-followed) path — the identity tccd keys a bare
+// CLI on. Matches the `binary_path` tccd logs, so it's what a grant must name.
+static NSString *selfBinaryPath(void) {
+    char exePath[PATH_MAX] = {0}, real[PATH_MAX] = {0};
+    uint32_t sz = sizeof(exePath);
+    if (_NSGetExecutablePath(exePath, &sz) != 0) return nil;
+    const char *p = realpath(exePath, real) ? real : exePath;
+    return @(p);
+}
+
+static NSString *sqlQuote(NSString *s) {
+    return [NSString stringWithFormat:@"'%@'",
+            [s stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+}
 
 // ---------------------------------------------------------------------------
 // Small utilities
@@ -794,18 +838,15 @@ static int cmd_doctor(NSArray<NSString *> *args) {
     // tccd can't resolve a bundle id without a .app — so a bundle-id row is
     // ignored for Accessibility/PostEvent. We therefore accept a grant under
     // EITHER identity (bundle id or the resolved binary path).
-    char exePath[PATH_MAX] = {0}, realPath[PATH_MAX] = {0};
-    uint32_t sz = sizeof(exePath);
-    const char *binPath = NULL;
-    if (_NSGetExecutablePath(exePath, &sz) == 0)
-        binPath = realpath(exePath, realPath) ? realPath : exePath;
+    NSString *binPath = selfBinaryPath();
     int (^bestAuth)(const char *) = ^(const char *svc){
         int a = tccAuth(svc, kSelfClient);
-        if (binPath) { int b = tccAuth(svc, binPath); if (b > a) a = b; }
+        if (binPath) { int b = tccAuth(svc, binPath.UTF8String); if (b > a) a = b; }
         return a;
     };
     int selfScreen = bestAuth("kTCCServiceScreenCapture");
     int selfAX     = bestAuth("kTCCServiceAccessibility");
+    BOOL amfi = amfiRelaxed();
 
     // Three states, not two:
     //   granted  — a TCC.db row says ALLOWED for winctl (bundle-id OR path)
@@ -818,10 +859,11 @@ static int cmd_doctor(NSArray<NSString *> *args) {
     BOOL green   = granted && live;
 
     if (json) {
-        printf("{\"disclaimed\":%s,\"liveScreenCapture\":%s,\"liveAccessibility\":%s,"
+        printf("{\"disclaimed\":%s,\"amfiRelaxed\":%s,\"liveScreenCapture\":%s,\"liveAccessibility\":%s,"
                "\"self\":{\"client\":\"%s\",\"screenCapture\":\"%s\",\"accessibility\":\"%s\"},"
                "\"granted\":%s,\"liveActive\":%s,\"harnessIndependent\":%s}\n",
-               disclaimed?"true":"false", liveScreen?"true":"false", liveAX?"true":"false",
+               disclaimed?"true":"false", amfi?"true":"false",
+               liveScreen?"true":"false", liveAX?"true":"false",
                kSelfClient, authStr(selfScreen), authStr(selfAX),
                granted?"true":"false", live?"true":"false", green?"true":"false");
         return green ? 0 : 1;
@@ -832,6 +874,9 @@ static int cmd_doctor(NSArray<NSString *> *args) {
     printf("Self-disclaim: %s (TCC-responsible process = %s)\n",
            disclaimed ? "ACTIVE" : "NOT active (running un-disclaimed!)",
            disclaimed ? "winctl itself" : "the calling host");
+    printf("AMFI enforcement: %s\n", amfi
+           ? "RELAXED (amfi_get_out_of_my_way) — bare CLIs are granted by PATH; `winctl grant` can self-grant"
+           : "ENFORCING (standard Mac) — grant via System Settings; winctl can't edit TCC under SIP");
     printf("\n");
     printf("Standing grant for %s (system TCC.db) — authoritative:\n", kSelfClient);
     printf("  kTCCServiceScreenCapture  : %s\n", authStr(selfScreen));
@@ -846,29 +891,79 @@ static int cmd_doctor(NSArray<NSString *> *args) {
                "   UNDER ANY HARNESS (VS Code, Terminal, Ocean, cron…): the grant follows winctl,\n"
                "   not the host.\n");
     } else if (granted && !live) {
-        printf("=> AMBER: a grant row exists but tccd is NOT honoring it live. On this AMFI box\n"
-               "   that usually means the row is keyed to the WRONG identity — a bundle-id row\n"
-               "   that tccd can't match for a bare CLI (it identifies winctl by PATH). Re-grant\n"
-               "   by PATH (client_type=1) as shown below, then re-run doctor.\n");
+        printf("=> AMBER: a grant row exists but tccd is NOT honoring it live. Usually the row is\n"
+               "   keyed to the WRONG identity — a bundle-id row that tccd can't match for a bare\n"
+               "   CLI (it identifies winctl by PATH). Re-grant by PATH; see below.\n");
     } else {
-        printf("=> RED: not granted to winctl's own identity yet. See the one-time grant below.\n");
+        printf("=> RED: not granted to winctl's own identity yet. See below.\n");
     }
 
     if (!green) {
-        printf("\nOne-time grant (root; writes the SYSTEM TCC.db). Grant winctl's resolved\n");
-        printf("BINARY PATH with client_type=1 and NULL csreq (identifier-only) — this is what\n");
-        printf("tccd matches for a bare CLI on an AMFI-relaxed box:\n");
-        printf("  SYS='/Library/Application Support/com.apple.TCC/TCC.db'\n");
-        printf("  BIN=%s\n", binPath ? binPath : "$(command -v winctl)");
-        printf("  for S in kTCCServiceScreenCapture kTCCServiceAccessibility \\\n");
-        printf("           kTCCServicePostEvent kTCCServiceListenEvent; do\n");
-        printf("    sqlite3 \"$SYS\" \"INSERT OR REPLACE INTO access \\\n");
-        printf("      (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) \\\n");
-        printf("      VALUES ('$S','$BIN',1,2,4,1,NULL,0);\"\n");
-        printf("  done\n");
-        printf("  killall tccd\n");
+        if (amfi)
+            printf("\n   Fix: run `sudo winctl grant` (writes winctl's PATH into the system TCC.db).\n");
+        else
+            printf("\n   Fix: System Settings > Privacy & Security > add %s to\n"
+                   "        Accessibility and Screen Recording (winctl can't edit TCC under SIP).\n",
+                   binPath ? binPath.UTF8String : "the winctl binary");
     }
     return green ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// grant — self-install winctl's TCC grant (AMFI-relaxed boxes only)
+// ---------------------------------------------------------------------------
+// Writes path-identity rows (client_type=1, NULL csreq) for winctl's four
+// services directly into the SYSTEM TCC.db, then restarts tccd. This only works
+// where TCC can be edited at all — i.e. AMFI relaxed AND SIP disabled (Tanner's
+// research box). On a standard Mac (AMFI enforcing / SIP on) it refuses and
+// explains the System Settings route instead.
+static int cmd_grant(NSArray<NSString *> *args) {
+    BOOL revoke = [args containsObject:@"--revoke"];
+    NSString *bin = selfBinaryPath();
+    if (!bin) die(@"cannot resolve winctl's own binary path");
+
+    if (!amfiRelaxed()) {
+        printf("winctl grant: this looks like a standard Mac (AMFI enforcing). winctl can't\n"
+               "edit the SIP-protected TCC database here. Grant it the normal way — prompts work:\n"
+               "  System Settings > Privacy & Security > Accessibility     — add %s\n"
+               "  System Settings > Privacy & Security > Screen Recording  — add %s\n",
+               bin.UTF8String, bin.UTF8String);
+        return 2;
+    }
+    if (geteuid() != 0)
+        die(@"writing the system TCC.db needs root — re-run: sudo winctl grant%@",
+            revoke ? @" --revoke" : @"");
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(kSystemTCC, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        NSString *e = db ? @(sqlite3_errmsg(db)) : @"open failed";
+        if (db) sqlite3_close(db);
+        die(@"cannot open %s for write: %@ (SIP enabled?)", kSystemTCC, e);
+    }
+    for (size_t i = 0; i < sizeof(kWinctlServices) / sizeof(*kWinctlServices); i++) {
+        NSString *sql = revoke
+            ? [NSString stringWithFormat:
+                @"DELETE FROM access WHERE service='%s' AND client=%@ AND client_type=1;",
+                kWinctlServices[i], sqlQuote(bin)]
+            : [NSString stringWithFormat:
+                @"INSERT OR REPLACE INTO access "
+                 "(service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) "
+                 "VALUES ('%s',%@,1,2,4,1,NULL,0);", kWinctlServices[i], sqlQuote(bin)];
+        char *err = NULL;
+        if (sqlite3_exec(db, sql.UTF8String, NULL, NULL, &err) != SQLITE_OK) {
+            NSString *e = err ? @(err) : @"?";
+            sqlite3_free(err);
+            sqlite3_close(db);
+            die(@"TCC write failed: %@", e);
+        }
+    }
+    sqlite3_close(db);
+    system("/usr/bin/killall tccd >/dev/null 2>&1");
+
+    printf("%s winctl by PATH (%s) for: ScreenCapture, Accessibility, PostEvent, ListenEvent.\n",
+           revoke ? "Revoked" : "Granted", bin.UTF8String);
+    printf("Verify: winctl doctor\n");
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -884,9 +979,12 @@ static void usage(void) {
         "  winctl key      <target> <keyspec>     e.g. return, cmd+s, cmd+shift+4, esc, tab\n"
         "  winctl click    <target> <x> <y> | --title T [--role R] [--id ID] [--press]\n"
         "  winctl describe <target> [--actionable] [--role R] [--title T] [--id ID] [--json]\n"
-        "  winctl doctor   [--json]\n\n"
+        "  winctl doctor   [--json]\n"
+        "  winctl grant    [--revoke]             self-install the TCC grant (AMFI-relaxed box)\n\n"
         "<target>:  app-name-substring | pid:N | win:ID   (from `winctl list`)\n"
-        "`winctl <command> --help` for flags, examples, and caveats.\n");
+        "`winctl <command> --help` for flags, examples, and caveats.\n"
+        "Permissions/capture/input acting up? run `winctl doctor` — it explains this box's\n"
+        "TCC/AMFI quirks and how to fix them.\n");
 }
 
 // Per-command help — the canonical home for usage/examples/caveats (the skill
@@ -942,12 +1040,22 @@ static BOOL cmdHelp(NSString *cmd, NSArray<NSString *> *args) {
         "  --all    include off-screen / non-normal windows\n"
         "The win-id / pid it prints are the <target> for the other commands.\n";
     else if ([cmd isEqualToString:@"doctor"]) h =
-        "winctl doctor — verify winctl's own TCC grants (Screen Recording + Accessibility).\n\n"
+        "winctl doctor — verify winctl's own TCC grants and report this box's quirks.\n\n"
         "  winctl doctor [--json]\n\n"
-        "Prints the standing grant for winctl's stable identity (com.nscake.winctl) and\n"
-        "a live self-check; says it WORKS UNDER ANY HARNESS when green, else prints the\n"
-        "one-time grant to run. Capture needs Screen Recording; input/describe need\n"
-        "Accessibility.\n";
+        "Reports self-disclaim state, AMFI enforcement (relaxed vs standard), the standing\n"
+        "grant, and a live self-check; GREEN => WORKS UNDER ANY HARNESS. When not green it\n"
+        "says how to fix it for THIS box (a bare CLI is granted by PATH on an AMFI-relaxed\n"
+        "box; via System Settings on a standard Mac). Run this first for any capture/input\n"
+        "or permission weirdness.\n";
+    else if ([cmd isEqualToString:@"grant"]) h =
+        "winctl grant — self-install winctl's TCC grant (AMFI-relaxed box only).\n\n"
+        "  sudo winctl grant            grant ScreenCapture/Accessibility/PostEvent/ListenEvent\n"
+        "  sudo winctl grant --revoke   remove those grants\n\n"
+        "Writes path-identity rows (client_type=1, NULL csreq) into the SYSTEM TCC.db and\n"
+        "restarts tccd — needs root, and only works where TCC is editable (AMFI relaxed +\n"
+        "SIP off). On a standard Mac it refuses and points you to System Settings instead.\n"
+        "The grant is keyed to winctl's PATH: rebuilds are fine, but MOVING the binary\n"
+        "voids it (re-run). Verify with `winctl doctor`.\n";
     if (!h) return NO;
     fputs(h, stdout);
     return YES;
@@ -1011,8 +1119,9 @@ int main(int argc, const char *argv[]) {
         if ([cmd isEqualToString:@"-h"] || [cmd isEqualToString:@"--help"] || [cmd isEqualToString:@"help"]) { usage(); return 0; }
         if (cmdHelp(cmd, args)) return 0;   // `winctl <command> --help`
 
-        // Become TCC-responsible for ourselves before doing any capture/input.
-        reexecDisclaimed(argc, argv);
+        // `grant` runs as root and only edits the TCC.db — it must NOT disclaim.
+        // Everything else becomes TCC-responsible for itself before capture/input.
+        if (![cmd isEqualToString:@"grant"]) reexecDisclaimed(argc, argv);
 
         if ([cmd isEqualToString:@"list"])     return cmd_list(args);
         if ([cmd isEqualToString:@"shot"])     return cmd_shot(args);
@@ -1021,6 +1130,7 @@ int main(int argc, const char *argv[]) {
         if ([cmd isEqualToString:@"click"])    return cmd_click(args);
         if ([cmd isEqualToString:@"describe"]) return cmd_describe(args);
         if ([cmd isEqualToString:@"doctor"])   return cmd_doctor(args);
+        if ([cmd isEqualToString:@"grant"])    return cmd_grant(args);
 
         fprintf(stderr, "winctl: unknown command '%s'\n", cmd.UTF8String);
         usage();

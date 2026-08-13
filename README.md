@@ -216,6 +216,11 @@ self-check (which now reflects winctl's *own* grant), and prints
 
 ### One-time grant
 
+On an AMFI-relaxed box winctl can grant **itself**: `sudo winctl grant` (and
+`sudo winctl grant --revoke`) writes the rows below and restarts tccd; on a
+standard Mac it refuses and points you to System Settings. `winctl doctor`
+reports the AMFI state and tells you which path applies. The manual equivalent:
+
 Grant winctl in the **system** TCC.db, once. **Identity matters:** on an
 AMFI-relaxed box (`amfi_get_out_of_my_way=1`) every non-Apple binary is stamped
 `CS_PLATFORM_BINARY`, and tccd cannot resolve a bundle id without a `.app` — so a
