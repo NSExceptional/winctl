@@ -14,6 +14,7 @@
 //   winctl shot     <target> <out.png> [--json]
 //   winctl type     <target> <text...>
 //   winctl key      <target> <keyspec>          e.g. return, cmd+s, cmd+shift+4
+//   winctl hold     <target> <keyspec>[:ms] …   press key(s) DOWN for a duration (walk games)
 //   winctl click    <target> <x> <y>            (OOP; actuates a background control)
 //   winctl click    <target> --title T [--role R] [--id ID] [--press]
 //   winctl describe <target> [--actionable] [--role R] [--title T] [--id ID] [--json]
@@ -41,6 +42,7 @@
 #import <sqlite3.h>
 #import <spawn.h>
 #import <mach-o/dyld.h>
+#import <signal.h>
 
 // Private libsystem SPI: mark a posix_spawn attribute so the spawned child
 // becomes the TCC-*responsible* process for itself, decoupled from whatever
@@ -487,6 +489,170 @@ static int cmd_key(NSArray<NSString *> *args) {
     printf("sent key '%s' (code %u, flags 0x%llx) to pid %d (win:%u)\n",
            spec.UTF8String, code, (unsigned long long)flags, t.pid, t.wid);
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// `hold` — press key(s) DOWN, wait, then release UP. Games that integrate
+// movement over HELD-key time (Panda3D / Toontown) don't move on a tap; they
+// need the key down for a real duration. Delivered via the same cursor-free
+// CGEventPostToPid path as `key`, so it actuates a BACKGROUND window.
+//
+// The keyUp is GUARANTEED: an interrupt (Ctrl+C / SIGTERM) only sets a flag —
+// the ordered release below still runs — so winctl NEVER leaves a key stuck
+// down in the target.
+// ---------------------------------------------------------------------------
+static CGEventSourceRef gHoldSrc = NULL;         // shared source for a hold session
+static pid_t            gHoldPid = 0;            // target pid for held keys
+static CGKeyCode        gHeldCodes[16];          // keys currently DOWN (press order)
+static CGEventFlags     gHeldFlags[16];          // flags each was pressed with
+static int              gHeldN = 0;
+static volatile sig_atomic_t gHoldInterrupted = 0;
+
+// Async-signal-safe: only record that we were interrupted. The hold loop sees
+// the flag, stops, and releases everything through the normal code path.
+static void onHoldSignal(int sig) { (void)sig; gHoldInterrupted = 1; }
+
+static void holdPress(CGKeyCode code, CGEventFlags flags) {
+    CGEventRef e = CGEventCreateKeyboardEvent(gHoldSrc, code, true);
+    if (!e) return;
+    CGEventSetFlags(e, flags);
+    CGEventPostToPid(gHoldPid, e);
+    CFRelease(e);
+    if (gHeldN < (int)(sizeof(gHeldCodes) / sizeof(*gHeldCodes))) {
+        gHeldCodes[gHeldN] = code; gHeldFlags[gHeldN] = flags; gHeldN++;
+    }
+}
+
+// Release every held key in reverse press order (base key first, then the
+// modifiers). Idempotent — safe after a partial press or a second call.
+static void holdReleaseAll(void) {
+    for (int i = gHeldN - 1; i >= 0; i--) {
+        CGEventRef e = CGEventCreateKeyboardEvent(gHoldSrc, gHeldCodes[i], false);
+        if (!e) continue;
+        CGEventSetFlags(e, gHeldFlags[i]);
+        CGEventPostToPid(gHoldPid, e);
+        CFRelease(e);
+    }
+    gHeldN = 0;
+}
+
+// One segment: press the chord's modifiers (cumulative flags) then the base key
+// DOWN, hold duration_ms, then release everything UP. Returns NO if interrupted.
+static BOOL holdOne(CGKeyCode code, CGEventFlags flags, int duration_ms, int repeat_ms) {
+    static const struct { CGEventFlags mask; CGKeyCode kc; } kMods[] = {
+        { kCGEventFlagMaskCommand,     55 },   // command
+        { kCGEventFlagMaskShift,       56 },   // shift
+        { kCGEventFlagMaskControl,     59 },   // control
+        { kCGEventFlagMaskAlternate,   58 },   // option
+        { kCGEventFlagMaskSecondaryFn, 63 },   // fn
+    };
+    CGEventFlags cum = 0;
+    for (int i = 0; i < (int)(sizeof(kMods) / sizeof(*kMods)); i++)
+        if (flags & kMods[i].mask) { cum |= kMods[i].mask; holdPress(kMods[i].kc, cum); }
+    holdPress(code, flags);   // base key DOWN, carrying the full chord's flags
+
+    // Hold. Sleep in short slices so an interrupt breaks out promptly. A single
+    // held keydown is enough for engines that latch on the down/up transition
+    // (Panda3D / Toontown); --repeat pulses autorepeat keydowns for anything
+    // that instead needs a repeating stream to sustain the action.
+    int elapsed = 0, sinceRep = 0; const int slice = 10;   // ms
+    while (elapsed < duration_ms && !gHoldInterrupted) {
+        usleep((useconds_t)slice * 1000);
+        elapsed += slice; sinceRep += slice;
+        if (repeat_ms > 0 && sinceRep >= repeat_ms && !gHoldInterrupted) {
+            CGEventRef r = CGEventCreateKeyboardEvent(gHoldSrc, code, true);
+            if (r) {
+                CGEventSetFlags(r, flags);
+                CGEventSetIntegerValueField(r, kCGKeyboardEventAutorepeat, 1);
+                CGEventPostToPid(gHoldPid, r);
+                CFRelease(r);
+            }
+            sinceRep = 0;
+        }
+    }
+
+    holdReleaseAll();   // ALWAYS: base UP, then modifiers UP (reverse order)
+    return !gHoldInterrupted;
+}
+
+// A non-empty token made up entirely of decimal digits (a bare duration).
+static BOOL isAllDigits(NSString *s) {
+    if (s.length == 0) return NO;
+    NSCharacterSet *notDigit = [NSCharacterSet decimalDigitCharacterSet].invertedSet;
+    return [s rangeOfCharacterFromSet:notDigit].location == NSNotFound;
+}
+
+static int cmd_hold(NSArray<NSString *> *args) {
+    // Optional flags first, so a numeric positional isn't mistaken for a value.
+    int repeat_ms = 0;
+    NSMutableArray<NSString *> *pos = [NSMutableArray array];
+    for (NSUInteger i = 0; i < args.count; i++) {
+        NSString *a = args[i];
+        if ([a isEqualToString:@"--repeat"] && i + 1 < args.count) repeat_ms = args[++i].intValue;
+        else if ([a hasPrefix:@"--repeat="]) repeat_ms = [a substringFromIndex:9].intValue;
+        else [pos addObject:a];
+    }
+    if (pos.count < 2)
+        die(@"usage: winctl hold <target> <keyspec>[:ms] [duration_ms | more segments]\n"
+             "       winctl hold win:42 up 1500            (single hold, 1500 ms)\n"
+             "       winctl hold win:42 up:1200 left:400   (sequence of timed holds)");
+
+    NSString *targetStr = pos[0];
+
+    // Parse the tokens after the target into (keyspec, ms, code, flags) segments.
+    // "keyspec:ms" is one segment; a bare keyspec defaults to 500 ms; a lone
+    // integer overrides the PREVIOUS segment's duration (the single-hold form
+    // `hold <target> up 1500`). All keyspecs are validated up front, before we
+    // touch the target, so a typo can't leave a key half-pressed.
+    NSMutableArray<NSMutableArray *> *segs = [NSMutableArray array];
+    for (NSUInteger i = 1; i < pos.count; i++) {
+        NSString *tok = pos[i];
+        if (isAllDigits(tok)) {
+            if (segs.count == 0) die(@"'%@' has no keyspec before it", tok);
+            int ms = tok.intValue; if (ms < 1) ms = 1; if (ms > 120000) ms = 120000;
+            segs.lastObject[1] = @(ms);
+            continue;
+        }
+        NSString *spec = tok; int ms = 500;
+        NSRange colon = [tok rangeOfString:@":" options:NSBackwardsSearch];
+        if (colon.location != NSNotFound) {
+            NSString *msStr = [tok substringFromIndex:colon.location + 1];
+            if (!isAllDigits(msStr)) die(@"bad segment '%@' (want keyspec:ms, e.g. up:1200)", tok);
+            spec = [tok substringToIndex:colon.location];
+            ms = msStr.intValue;
+        }
+        CGKeyCode code = 0; CGEventFlags flags = 0;
+        if (!parseKeyspec(spec, &code, &flags)) die(@"could not parse keyspec '%@'", spec);
+        if (ms < 1) ms = 1; if (ms > 120000) ms = 120000;   // cap: never hold past 2 min
+        [segs addObject:@[spec, @(ms), @(code), @(flags)].mutableCopy];
+    }
+    if (segs.count == 0) die(@"no keyspec to hold");
+
+    PGTarget t = resolveTarget(targetStr);
+    if (!t.found) die(@"no window matched target '%@'", targetStr);
+
+    // Guaranteed-release wiring: an interrupt only sets gHoldInterrupted; the
+    // release inside holdOne still runs, so no key is ever left stuck DOWN.
+    gHoldSrc = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    gHoldPid = t.pid;
+    signal(SIGINT,  onHoldSignal);
+    signal(SIGTERM, onHoldSignal);
+
+    for (NSUInteger i = 0; i < segs.count; i++) {
+        NSArray *s = segs[i];
+        CGKeyCode code = (CGKeyCode)[s[2] unsignedIntValue];
+        CGEventFlags flags = (CGEventFlags)[s[3] unsignedLongLongValue];
+        if (!holdOne(code, flags, [s[1] intValue], repeat_ms)) break;   // interrupted
+        if (i + 1 < segs.count) usleep(8000);                           // gap between segments
+    }
+    if (gHoldSrc) { CFRelease(gHoldSrc); gHoldSrc = NULL; }
+
+    NSMutableArray<NSString *> *shown = [NSMutableArray array];
+    for (NSArray *s in segs) [shown addObject:[NSString stringWithFormat:@"%@:%@ms", s[0], s[1]]];
+    printf("held %s on pid %d (win:%u)%s\n",
+           [shown componentsJoinedByString:@" "].UTF8String, t.pid, t.wid,
+           gHoldInterrupted ? "  [interrupted — keys released]" : "");
+    return gHoldInterrupted ? 130 : 0;
 }
 
 // Stamp an integer field on a CGEvent, preferring the non-validating SkyLight
@@ -1155,6 +1321,7 @@ static void usage(void) {
         "  winctl shot     <target> <out.png> [--json]\n"
         "  winctl type     <target> <text...>\n"
         "  winctl key      <target> <keyspec>     e.g. return, cmd+s, cmd+shift+4, esc, tab\n"
+        "  winctl hold     <target> <keyspec>[:ms] [ms]   hold key(s) DOWN (e.g. up 1500, up:1200 left:400)\n"
         "  winctl click    <target> <x> <y> | --title T [--role R] [--id ID] [--press]\n"
         "  winctl describe <target> [--actionable] [--role R] [--title T] [--id ID] [--json]\n"
         "  winctl doctor   [--json]\n"
@@ -1213,6 +1380,22 @@ static BOOL cmdHelp(NSString *cmd, NSArray<NSString *> *args) {
         "  winctl key <target> <keyspec>     e.g. return, tab, esc, cmd+s, cmd+shift+4\n\n"
         "Both deliver to the target's key window. Need the Accessibility grant and an\n"
         "UNLOCKED session (a password-LOCK drops synthetic input; a screensaver is OK).\n";
+    else if ([cmd isEqualToString:@"hold"]) h =
+        "winctl hold — press key(s) DOWN for a real duration, then release (cursor-free).\n\n"
+        "  winctl hold <target> <keyspec> [duration_ms]     single hold (default 500 ms)\n"
+        "  winctl hold <target> <keyspec>[:ms] <keyspec>[:ms] …   a sequence, played in order\n"
+        "  [--repeat MS]      also pulse autorepeat keydowns every MS while held\n\n"
+        "A tap (see `key`) is too brief for engines that integrate movement over HELD\n"
+        "time (Panda3D / Toontown): the toon moves only while the key is really down. So\n"
+        "`hold` presses down, waits, releases — a chord presses modifiers+key down and\n"
+        "releases in reverse. The keyUp ALWAYS fires (even on Ctrl+C), so a key is never\n"
+        "left stuck down. A single held keydown suffices for engines that latch on the\n"
+        "down/up transition; add --repeat for anything needing a repeating stream. Same\n"
+        "grant / unlocked-session rules as `key`.\n\n"
+        "examples:\n"
+        "  winctl hold win:20722 up 1500                    walk forward ~1.5s\n"
+        "  winctl hold win:20722 up:1200 left:400 up:1500   scripted path\n"
+        "  winctl hold Toontown shift+up 800                hold a chord\n";
     else if ([cmd isEqualToString:@"list"]) h =
         "winctl list — enumerate windows: win-id, pid, app, title, bounds.\n\n"
         "  winctl list [--all] [--json]\n\n"
@@ -1328,6 +1511,7 @@ int main(int argc, const char *argv[]) {
         if ([cmd isEqualToString:@"shot"])     return cmd_shot(args);
         if ([cmd isEqualToString:@"type"])     return cmd_type(args);
         if ([cmd isEqualToString:@"key"])      return cmd_key(args);
+        if ([cmd isEqualToString:@"hold"])     return cmd_hold(args);
         if ([cmd isEqualToString:@"click"])    return cmd_click(args);
         if ([cmd isEqualToString:@"describe"]) return cmd_describe(args);
         if ([cmd isEqualToString:@"doctor"])   return cmd_doctor(args);

@@ -65,6 +65,7 @@ winctl list [--all] [--json]
 winctl shot     <target> <out.png> [--json]
 winctl type     <target> <text...>
 winctl key      <target> <keyspec>       # return, cmd+s, cmd+shift+4, esc, tab, ...
+winctl hold     <target> <keyspec>[:ms] [ms]   # hold key(s) DOWN for a duration (walk games); sequence: up:1200 left:400
 winctl click    <target> <x> <y>         # coordinate form; OOP, see caveat below
 winctl click    <target> --title T [--role R] [--id ID] [--press]   # element form
 winctl describe <target> [--actionable] [--role R] [--title T] [--id ID] [--json]
@@ -88,6 +89,8 @@ winctl shot win:8541 /tmp/w.png --json   # capture an exact window, JSON out
 winctl type TextEdit "hello world"       # type into TextEdit, cursor-free
 winctl key  TextEdit return              # press Return
 winctl key  TextEdit cmd+s               # ⌘S
+winctl hold win:20722 up 1500            # hold ↑ for 1.5s — walk a Panda3D/Toontown toon forward
+winctl hold win:20722 up:1200 left:400 up:1500   # a scripted sequence of timed holds
 winctl describe Safari --actionable      # list clickable controls (role/label/id/frame)
 winctl click Safari --title "Reload"     # click the control labelled "Reload"
 winctl click Safari --id GoBackButton --press   # AXPress a control by identifier
@@ -149,6 +152,7 @@ missing.
 | capture a window      | SkyLight `SLSHWCaptureWindowList` (2× retina) → `CGWindowListCreateImage` fallback | ✅ works, incl. under the screensaver / occluded / off-Space |
 | type text             | `CGEventPostToPid` + unicode string | ✅ actuates the focused responder; real cursor unmoved (0 px) |
 | key / chord           | `CGEventPostToPid` key + modifier flags | ✅ works (`return`, `cmd+s`, …) |
+| **hold a key**        | `CGEventPostToPid` key down → delay → up (keyUp guaranteed, even on Ctrl+C) | ✅ sustains movement in a background Panda3D window (Toontown); a single held keydown, no stutter; chords + timed sequences |
 | **click a control**   | `CGEventPostToPid` mouse events **with window-routing fields + window-local location stamped** | ✅ **actuates a background control** (unlocked session); real cursor unmoved (0 px) |
 | **target by element** | OOP `AXUIElement` tree walk → element center click, or `AXPress` | ✅ click/describe a control by role/label/identifier (needs Accessibility grant) |
 
